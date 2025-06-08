@@ -7,13 +7,160 @@ import spacy
 import os
 from pathlib import Path
 import tempfile
-
+import numpy as np
+import pdf2image
 # Load both models
 nlp_base = spacy.load("en_core_web_sm")
 
 # custom SpanCat model
 custom_model_path = Path(__file__).parent / "cs-acad_ner" / "models" / "cs-acad_spancat"
 nlp_custom = spacy.load(custom_model_path)
+def process_camscanner_pdf(pdf_path, output_path=None):
+    """
+    Convert CamScanner PDF to OCR-readable images, focusing on first 2 pages.
+    
+    Args:
+        pdf_path: Path to the CamScanner PDF file
+        output_path: Optional path to save processed images (default: temp file)
+    
+    Returns:
+        List of processed page images (PIL.Image objects)
+    """
+    try:
+        # Convert first 2 pages of PDF to images (300 DPI for good OCR quality)
+        pages = pdf2image.convert_from_path(
+            pdf_path,
+            first_page=1,
+            last_page=2,
+            dpi=300,
+            grayscale=True
+        )
+        
+        processed_pages = []
+        
+        for i, page in enumerate(pages):
+            # Convert PIL image to numpy array for OpenCV processing
+            img = np.array(page)
+            
+            # Apply preprocessing tailored for CamScanner documents
+            processed = preprocess_camscanner_image(img)
+            
+            # Convert back to PIL Image
+            processed_pages.append(Image.fromarray(processed))
+            
+            # Save if output path specified
+            if output_path:
+                page_path = f"{output_path}_page{i+1}.jpg"
+                processed_pages[-1].save(page_path, "JPEG", quality=95)
+        
+        return processed_pages
+    
+    except Exception as e:
+        print(f"Error processing CamScanner PDF: {str(e)}")
+        return []
+
+def preprocess_camscanner_image(img):
+    """
+    Preprocess a single CamScanner page image for better OCR results.
+    
+    Args:
+        img: Numpy array of the image (grayscale)
+    
+    Returns:
+        Processed numpy array
+    """
+    try:
+        # 1. Adaptive thresholding to handle uneven lighting
+        processed = cv2.adaptiveThreshold(
+            img, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 11, 2
+        )
+        
+        # 2. Remove small noise (like scanner dust)
+        kernel = np.ones((1, 1), np.uint8)
+        processed = cv2.morphologyEx(processed, cv2.MORPH_OPEN, kernel)
+        
+        # 3. Enhance text sharpness
+        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        processed = cv2.filter2D(processed, -1, kernel)
+        
+        # 4. Deskew if needed (common in phone-scanned documents)
+        coords = np.column_stack(np.where(processed > 0))
+        angle = cv2.minAreaRect(coords)[-1]
+        
+        if angle < -45:
+            angle = -(90 + angle)
+        else:
+            angle = -angle
+            
+        (h, w) = processed.shape[:2]
+        center = (w // 2, h // 2)
+        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+        processed = cv2.warpAffine(
+            processed, M, (w, h),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REPLICATE
+        )
+        
+        return processed
+    
+    except Exception as e:
+        print(f"Error preprocessing CamScanner image: {str(e)}")
+        return img
+def extract_keywords_from_abstract(text):
+    """Extract keywords from the abstract section of a thesis."""
+    # Try to find the abstract section
+    abstract_start = None
+    lines = text.split('\n')
+    
+    # Look for common abstract indicators
+    for i, line in enumerate(lines):
+        if "abstract" in line.lower() and len(line.strip().split()) <= 3:
+            abstract_start = i + 1
+            break
+    
+    if abstract_start is None:
+        return "Not Found"
+    
+    # Get the abstract content (next 1-2 pages)
+    abstract_end = min(abstract_start + 40, len(lines))  # ~40 lines = ~2 pages
+    abstract_text = '\n'.join(lines[abstract_start:abstract_end])
+    
+    # Process with spaCy
+    doc = nlp_base(abstract_text)
+    
+    # Extract keywords using noun chunks and named entities
+    keywords = set()
+    
+    # Get noun chunks
+    for chunk in doc.noun_chunks:
+        chunk_text = chunk.text.strip()
+        if 2 <= len(chunk_text.split()) <= 4:  # Multi-word phrases
+            keywords.add(chunk_text)
+    
+    # Get named entities
+    for ent in doc.ents:
+        if ent.label_ in ["ORG", "PRODUCT", "TECH"]:
+            keywords.add(ent.text)
+    
+    # Get important nouns/adjectives
+    for token in doc:
+        if token.pos_ in ["NOUN", "PROPN", "ADJ"] and not token.is_stop:
+            if len(token.text) > 3:  # Skip short words
+                keywords.add(token.text.lower())
+    
+    # Filter out common words
+    common_words = {
+        "study", "research", "paper", "thesis", "project", 
+        "method", "result", "analysis", "data", "system"
+    }
+    filtered_keywords = [
+        kw for kw in keywords 
+        if kw.lower() not in common_words and len(kw) > 3
+    ]
+    
+    return ", ".join(filtered_keywords[:10]) if filtered_keywords else "Not Found"
 
 def preprocess_image_for_ocr(image_path):
     image = cv2.imread(image_path)
@@ -186,13 +333,13 @@ def extract_info(text):
     # Process with custom model for other fields
     doc = nlp_custom(text)
 
-    # Initialize default values (HARDCODED SCHOOL)
+    # Initialize default values
     info = {
         "Title": title,
         "Author": "Not Found",
         "School": "Cavite State University - Imus Campus",
         "Year Made": "Not Found",
-        "Keywords": "Not Found"
+        "Keywords": extract_keywords_from_abstract(text)  # Use new function
     }
 
     # Extract authors and other entities
@@ -220,7 +367,32 @@ def extract_info(text):
             # Remove duplicate middle initials (e.g., "L L" -> "L")
             name = re.sub(r'(\b[A-Z]\b\s*){2,}', lambda m: m.group(1), name)
         return name
-
+    cs_categories = {
+        'Artificial Intelligence': ['ai', 'artificial intelligence', 'machine learning', 'deep learning', 'neural network'],
+        'Computer Vision': ['computer vision', 'image processing', 'cv'],
+        'Natural Language Processing': ['nlp', 'natural language', 'text processing'],
+        'Data Science': ['data science', 'data mining', 'big data', 'data analysis'],
+        'Cybersecurity': ['cybersecurity', 'network security', 'encryption', 'blockchain'],
+        'Software Engineering': ['software engineering', 'agile', 'devops', 'software development'],
+        'Web Development': ['web development', 'web application', 'frontend', 'backend'],
+        'Mobile Development': ['mobile development', 'android', 'ios', 'flutter'],
+        'Cloud Computing': ['cloud computing', 'aws', 'azure', 'google cloud'],
+        'Internet of Things': ['iot', 'internet of things', 'embedded systems'],
+        'Databases': ['database', 'sql', 'nosql', 'data warehouse'],
+        'Algorithms': ['algorithm', 'data structure', 'computational complexity']
+    }
+    
+    detected_categories = []
+    text_lower = text.lower()
+    
+    for category, keywords in cs_categories.items():
+        for keyword in keywords:
+            if keyword in text_lower:
+                detected_categories.append(category)
+                break  # Only need one match per category
+    
+    # Remove duplicates while preserving order
+    detected_categories = list(dict.fromkeys(detected_categories))
     # Two-pass deduplication for better accuracy
     unique_authors = []
     seen_names = set()
