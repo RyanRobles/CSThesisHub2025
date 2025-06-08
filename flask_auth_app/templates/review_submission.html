@@ -3,12 +3,9 @@
 {% block content %}
 <div class="container-fluid">
     <div class="row">
-        <!-- Sidebar -->
         {% include 'admin_sidebar.html' %}
 
-        <!-- Main Content -->
         <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 py-4">
-            <!-- Header -->
             <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
                 <h1 class="h2">
                     <i class="fas fa-file-alt me-2"></i>Review Submission
@@ -20,18 +17,20 @@
                 </div>
             </div>
 
-            <!-- Flash Messages -->
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category }} alert-dismissible fade show">
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="mb-3">
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
                         {{ message }}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                        </div>
+                    {% endfor %}
                     </div>
-                {% endfor %}
-            {% endwith %}
+                {% endif %}
+                {% endwith %}
 
             <div class="row">
-                <!-- Main Content Column -->
                 <div class="col-lg-8">
                     <div class="card shadow mb-4">
                         <div class="card-header py-3 d-flex justify-content-between align-items-center">
@@ -48,7 +47,6 @@
                         <div class="card-body">
                             {% if preview_url and submission.file_path %}
                                 {% set ext = submission.file_path.rsplit('.', 1)[-1].lower() %}
-
                                 {% if ext in ['png', 'jpg', 'jpeg'] %}
                                 <div class="text-center mb-4">
                                     <h5 class="font-weight-bold text-gray-800 mb-3">
@@ -56,7 +54,6 @@
                                     </h5>
                                     <img src="{{ preview_url }}" class="img-fluid rounded shadow-sm" style="max-height: 400px;">
                                 </div>
-
                                 {% elif ext == 'pdf' %}
                                 <div class="mb-4">
                                     <h5 class="font-weight-bold text-gray-800 mb-3">
@@ -66,14 +63,12 @@
                                         <iframe src="{{ preview_url }}" class="border-0"></iframe>
                                     </div>
                                 </div>
-
                                 {% else %}
                                 <div class="alert alert-warning">
                                     <i class="fas fa-exclamation-triangle me-2"></i>
                                     Unsupported file type for preview
                                 </div>
                                 {% endif %}
-
                             {% else %}
                             <div class="alert alert-warning">
                                 <i class="fas fa-exclamation-triangle me-2"></i>
@@ -89,8 +84,7 @@
                                 <div class="row g-3 mb-4">
                                     <div class="col-md-12">
                                         <label class="form-label">Title</label>
-                                        <input type="text" name="title" class="form-control"
-                                               value="{{ submission.title }}" required>
+                                        <input type="text" name="title" class="form-control" value="{{ submission.title }}" required>
                                     </div>
 
                                     <div class="col-md-6">
@@ -100,27 +94,59 @@
 
                                     <div class="col-md-6">
                                         <label class="form-label">School</label>
-                                        <input type="text" name="school" class="form-control"
-                                               value="{{ submission.school }}">
+                                        <input type="text" name="school" class="form-control" value="{{ submission.school }}">
                                     </div>
 
                                     <div class="col-md-3">
                                         <label class="form-label">Year</label>
-                                        <input type="text" name="year_made" class="form-control"
-                                               value="{{ submission.year_made }}">
+                                        <input type="text" name="year_made" class="form-control" value="{{ submission.year_made }}">
+                                    </div>
+                                </div>
+
+                                <div class="col-md-12 mb-4">
+                                    <label class="form-label">Categories</label>
+                                    {% if detected_categories %}
+                                    <div class="alert alert-info mb-3">
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <i class="fas fa-lightbulb me-2"></i>
+                                                <strong>Detected Possible Categories:</strong>
+                                            </div>
+                                            <button type="button" class="btn btn-sm btn-outline-info" id="applyAllCategories">
+                                                <i class="fas fa-check-circle me-1"></i> Apply All
+                                            </button>
+                                        </div>
+                                        <div class="mt-2">
+                                            {% for cat in detected_categories %}
+                                                <button type="button" class="btn btn-sm btn-outline-info me-1 mb-1 category-suggestion"
+                                                    data-category="{{ cat }}">
+                                                    {{ cat }}
+                                                </button>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                    {% endif %}
+
+                                    <select name="categories" id="categories-select" class="form-select" multiple>
+                                        {% for category in all_categories %}
+                                            <option value="{{ category.id }}"
+                                                {% if category.id in selected_category_ids %}selected{% endif %}>
+                                                {{ category.name }}
+                                            </option>
+                                        {% endfor %}
+                                    </select>
+                                    <div class="form-text">
+                                        Hold Ctrl/Cmd to select multiple categories.
+                                        <a href="{{ url_for('manage_categories') }}" target="_blank">
+                                            <i class="fas fa-external-link-alt"></i> Manage all categories
+                                        </a>
                                     </div>
 
-                                    <div class="col-md-12">
-                                        <label class="form-label">Categories</label>
-                                        <select name="categories" class="form-select" multiple>
-                                            {% for category in all_categories %}
-                                                <option value="{{ category.id }}"
-                                                    {% if category.id in selected_category_ids %}selected{% endif %}>
-                                                    {{ category.name }}
-                                                </option>
-                                            {% endfor %}
-                                        </select>
-                                        <div class="form-text">Hold Ctrl/Cmd to select multiple categories</div>
+                                    <div class="input-group mt-2">
+                                        <input type="text" id="new_category_name" class="form-control" placeholder="Add new category">
+                                        <button class="btn btn-outline-secondary" type="button" id="add_category_btn">
+                                            <i class="fas fa-plus"></i> Add
+                                        </button>
                                     </div>
                                 </div>
 
@@ -129,11 +155,8 @@
                                 </h5>
                                 <div class="mb-4">
                                     <div class="upload-area p-4 border rounded bg-light">
-                                        <label class="form-label">
-                                            Upload Final PDF Version
-                                        </label>
-                                        <input type="file" name="revised_file" class="form-control"
-                                               accept=".pdf" {% if not existing_file %}required{% endif %}>
+                                        <label class="form-label">Upload Final PDF Version</label>
+                                        <input type="file" name="revised_file" class="form-control" accept=".pdf" {% if not existing_file %}required{% endif %}>
                                         <div class="form-text mt-2">
                                             {% if existing_file %}
                                                 Current: {{ existing_file }}
@@ -146,18 +169,14 @@
 
                                 <div class="mb-4">
                                     <label class="form-label">Review Notes</label>
-                                    <textarea name="notes" class="form-control" rows="3"
-                                              placeholder="Add any review comments..."></textarea>
+                                    <textarea name="notes" class="form-control" rows="3" placeholder="Add any review comments..."></textarea>
                                 </div>
 
                                 <div class="d-flex justify-content-end gap-2 border-top pt-3">
-                                    <button type="submit" name="action" value="reject"
-                                            class="btn btn-danger px-4">
+                                    <button type="submit" name="action" value="reject" class="btn btn-danger px-4">
                                         <i class="fas fa-times me-1"></i> Trash
                                     </button>
-                                    <button type="submit" name="action" value="approve"
-                                            class="btn btn-success px-4"
-                                            {% if not existing_file %}disabled{% endif %}>
+                                    <button type="submit" name="action" value="approve" class="btn btn-success px-4" {% if not existing_file %}disabled{% endif %}>
                                         <i class="fas fa-check me-1"></i> Upload
                                     </button>
                                 </div>
@@ -166,7 +185,6 @@
                     </div>
                 </div>
 
-                <!-- Extracted Text Column -->
                 <div class="col-lg-4">
                     <div class="card shadow mb-4">
                         <div class="card-header py-3">
@@ -194,24 +212,157 @@
 </div>
 
 <script>
-    // Disable approve button if no file exists
-    document.addEventListener('DOMContentLoaded', function() {
-        const approveBtn = document.querySelector('button[value="approve"]');
-        const fileInput = document.querySelector('input[name="revised_file"]');
+document.addEventListener('DOMContentLoaded', function() {
+    const fileExists = {{ 'true' if existing_file else 'false' }};
+    const approveBtn = document.querySelector('button[value="approve"]');
+    const fileInput = document.querySelector('input[name="revised_file"]');
+    const categorySelect = document.getElementById('categories-select');
+    const applyAllBtn = document.getElementById('applyAllCategories');
+    const categorySuggestions = document.querySelectorAll('.category-suggestion');
+    const addCategoryBtn = document.getElementById('add_category_btn');
+    const newCategoryInput = document.getElementById('new_category_name');
 
-        // Enable/disable approve button based on file existence
-        if (!{{ 'true' if existing_file else 'false' }}) {
-            if (approveBtn) approveBtn.disabled = true;
+    // Enable/disable approve button based on file existence
+    if (!fileExists && approveBtn) {
+        approveBtn.disabled = true;
+    }
+
+    if (fileInput) {
+        fileInput.addEventListener('change', function() {
+            if (approveBtn) {
+                approveBtn.disabled = this.files.length === 0;
+            }
+        });
+    }
+
+    // Function to add a category to the select
+    function addCategoryToSelect(categoryId, categoryName, select = true) {
+        // Check if the category already exists in the select
+        let exists = false;
+        for (let option of categorySelect.options) {
+            if (option.value == categoryId || option.text === categoryName) {
+                if (select) option.selected = true;
+                exists = true;
+                break;
+            }
         }
 
-        // Enable approve button when a new file is selected
-        if (fileInput) {
-            fileInput.addEventListener('change', function() {
-                if (this.files.length > 0) {
-                    if (approveBtn) approveBtn.disabled = false;
-                }
+        if (!exists) {
+            const newOption = new Option(categoryName, categoryId, select, select);
+            categorySelect.add(newOption);
+        }
+
+        return exists;
+    }
+
+    // Apply all detected categories
+    if (applyAllBtn) {
+        applyAllBtn.addEventListener('click', async function() {
+            const buttons = document.querySelectorAll('.category-suggestion');
+            for (const btn of buttons) {
+                const categoryName = btn.dataset.category;
+                await handleCategorySelection(categoryName);
+            }
+            showAlert('All categories applied successfully!', 'success');
+        });
+    }
+
+    // Apply single category
+    if (categorySuggestions) {
+        categorySuggestions.forEach(btn => {
+            btn.addEventListener('click', async function() {
+                const categoryName = this.dataset.category;
+                await handleCategorySelection(categoryName);
+                showAlert(`Category "${categoryName}" applied!`, 'success');
             });
+        });
+    }
+
+    // Handle category selection (checks if exists or adds new)
+    async function handleCategorySelection(categoryName) {
+        try {
+            // First check if it exists in the select options
+            let exists = false;
+            for (let option of categorySelect.options) {
+                if (option.text === categoryName) {
+                    option.selected = true;
+                    exists = true;
+                    break;
+                }
+            }
+
+            if (!exists) {
+                // If not exists, try to add it via AJAX
+                const response = await fetch('/ajax/add-category', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name: categoryName })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    addCategoryToSelect(data.id, data.name);
+                } else {
+                    throw new Error(data.message || 'Failed to add category');
+                }
+            }
+        } catch (error) {
+            console.error('Error applying category:', error);
+            showAlert(`Error applying category: ${error.message}`, 'danger');
         }
-    });
+    }
+
+    // Add new category
+    if (addCategoryBtn && newCategoryInput) {
+        addCategoryBtn.addEventListener('click', async function() {
+            const categoryName = newCategoryInput.value.trim();
+            if (!categoryName) {
+                showAlert('Please enter a category name', 'warning');
+                return;
+            }
+
+            try {
+                const response = await fetch('/ajax/add-category', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name: categoryName })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    addCategoryToSelect(data.id, data.name);
+                    newCategoryInput.value = '';
+                    showAlert(`Category "${data.name}" added successfully!`, 'success');
+                } else {
+                    throw new Error(data.message || 'Failed to add category');
+                }
+            } catch (error) {
+                console.error('Error adding category:', error);
+                showAlert(`Error adding category: ${error.message}`, 'danger');
+            }
+        });
+    }
+
+    // Helper function to show alerts
+    function showAlert(message, type) {
+        const alertDiv = document.createElement('div');
+        alertDiv.className = `alert alert-${type} mt-2`;
+        alertDiv.innerHTML = message;
+        
+        // Insert after the categories select
+        categorySelect.parentNode.insertBefore(alertDiv, categorySelect.nextSibling);
+        
+        // Remove after 3 seconds
+        setTimeout(() => {
+            alertDiv.remove();
+        }, 3000);
+    }
+});
 </script>
 {% endblock %}

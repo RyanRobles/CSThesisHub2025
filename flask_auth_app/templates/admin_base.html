@@ -108,7 +108,63 @@
                 margin: 0 auto;
                 filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
         }
-        @media (max-width: 991.98px) {
+         @media (max-width: 1300px) {
+            .sidebar {
+                width: 180px;
+                transform: none; /* Ensure it's visible */
+            }
+
+            .sidebar .nav-link {
+                font-size: 0.85rem;
+            }
+
+            .sidebar h1,
+            .sidebar h2,
+            .sidebar h3 {
+                font-size: 1rem;
+            }
+            .sidebar h3 {
+                font-size: 1rem
+
+            }
+            main {
+                margin-left: 180px;
+            }
+
+            .sidebar-toggle-btn {
+                display: none; /* No need for a toggle button */
+            }
+        }
+
+        /* Medium Screens (e.g., tablets and small laptops) */
+             @media (max-width: 1024px) {
+            .sidebar {
+                width: 180px;
+                transform: none; /* Ensure it's visible */
+            }
+
+            .sidebar .nav-link {
+                font-size: 0.85rem;
+            }
+
+            .sidebar h1,
+            .sidebar h2,
+            .sidebar h3 {
+                font-size: 1rem;
+            }
+          .sidebar h3 {
+                        font-size: 1rem
+
+                    }
+            main {
+                margin-left: 180px;
+            }
+
+            .sidebar-toggle-btn {
+                display: none; /* No need for a toggle button */
+            }
+        }
+                @media (max-width: 991.98px) {
             .sidebar {
                 transform: translateX(-100%);
             }
@@ -130,6 +186,18 @@
             text-align: center;
         }
         }
+
+        /* Small Screens (mobile phones) */
+        @media (max-width: 576px) {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar.active {
+                transform: translateX(0);
+            }
+        }
+
     </style>
     {% block extra_css %}{% endblock %}
 </head>

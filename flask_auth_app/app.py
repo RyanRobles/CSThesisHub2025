@@ -5,6 +5,12 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from PIL import Image
+##debugging
+import logging
+import random
+import string
+from werkzeug.security import generate_password_hash
+##
 import spacy
 import os
 import PyPDF2
@@ -13,15 +19,18 @@ import shutil
 from email_utils import send_verification_email, generate_code
 from markupsafe import Markup
 from nltk.stem import PorterStemmer
+import tempfile
 import re
 from difflib import SequenceMatcher
 import random
 import string
 from difflib import get_close_matches
+from authlib.integrations.flask_client import OAuth
+from flask import session, url_for
 from ocr_ner_utils import (
     extract_text_from_pdf,
     extract_text_from_image_by_type,
-    extract_info
+    extract_info, process_camscanner_pdf,pytesseract
 )
 
 app = Flask(__name__, template_folder='templates')
@@ -32,6 +41,10 @@ app.config['MYSQL_USER'] = 'root'
 app.config['MYSQL_PASSWORD'] = ''  
 app.config['MYSQL_DB'] = 'flask_auth'
 
+# Google Config
+app.config['GOOGLE_CLIENT_ID'] = '586814776597-d02cl4irnvjodsn52iegiqlvo7edbgdk.apps.googleusercontent.com'
+app.config['GOOGLE_CLIENT_SECRET'] = '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'
+app.config['GOOGLE_DISCOVERY_URL'] = "https://accounts.google.com/.well-known/openid-configuration"
 # Gmail SMTP Configuration
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
@@ -48,6 +61,15 @@ mysql = MySQL(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
+# Initialize OAuth
+oauth = OAuth(app)
+google = oauth.register(
+    name='google',
+    client_id=app.config['GOOGLE_CLIENT_ID'],
+    client_secret=app.config['GOOGLE_CLIENT_SECRET'],
+    server_metadata_url=app.config['GOOGLE_DISCOVERY_URL'],
+    client_kwargs={'scope': 'openid email profile'},
+)
 # Load NLP model
 nlp = spacy.load("en_core_web_sm")
 
@@ -391,6 +413,69 @@ def search():
                            grouped_results=grouped_results,
                            fallback_results=fallback_results,
                            related_concepts=related_concepts)
+@app.route('/login/google/authorize')
+def google_authorize():
+    try:
+        token = google.authorize_access_token()
+        userinfo = google.get('https://www.googleapis.com/oauth2/v1/userinfo').json()
+        print("Userinfo from Google:", userinfo)
+
+        # Only allow @cvsu.edu.ph emails
+        if not userinfo['email'].lower().endswith('@cvsu.edu.ph'):
+            flash('Only CVSU email accounts (@cvsu.edu.ph) are allowed to login with Google', 'error')
+            return redirect(url_for('login'))
+
+        cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+        cursor.execute("SELECT * FROM users WHERE email = %s", (userinfo['email'],))
+        user = cursor.fetchone()
+
+        if user:
+            user_obj = User(
+                id=user['id'],
+                username=user['username'],
+                role=user['role']
+            )
+            login_user(user_obj)
+            flash('Login successful', 'success')
+            return redirect(url_for('verify_role'))
+        else:
+            # Create a new user
+            username = userinfo['email'].split('@')[0]
+            password = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+
+            try:
+                cursor.execute(
+                    "INSERT INTO users (username, email, password, is_verified, role) VALUES (%s, %s, %s, %s, 'user')",
+                    (username, userinfo['email'], generate_password_hash(password), 1)
+                )
+                mysql.connection.commit()
+
+                cursor.execute("SELECT * FROM users WHERE email = %s", (userinfo['email'],))
+                new_user = cursor.fetchone()
+
+                user_obj = User(
+                    id=new_user['id'],
+                    username=new_user['username'],
+                    role=new_user['role']
+                )
+                login_user(user_obj)
+                flash('Account created and logged in successfully', 'success')
+                return redirect(url_for('verify_role'))
+
+            except Exception as e:
+                mysql.connection.rollback()
+                flash('Error creating account. Please try again.', 'error')
+                return redirect(url_for('signup'))
+
+    except Exception as e:
+        print("GOOGLE LOGIN ERROR:", e)
+        flash('Google login failed. Please try again.', 'error')
+        return redirect(url_for('login'))
+
+@app.route('/login/google')
+def google_login():
+    redirect_uri = url_for('google_authorize', _external=True)
+    return google.authorize_redirect(redirect_uri)
 
 @app.route('/search-suggestions')
 def search_suggestions():
@@ -466,13 +551,18 @@ def expand_search_terms(query):
 def signup():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
-        email = request.form.get('email', '').strip()
+        email = request.form.get('email', '').strip().lower()  # Convert to lowercase
         password = request.form.get('password', '').strip()
         confirm_password = request.form.get('confirm_password', '').strip()
 
         # Basic validations
         if not username or not email or not password or not confirm_password:
             flash('All fields are required.', 'error')
+            return redirect(url_for('signup'))
+
+        # Validate CVSU email
+        if not email.endswith('@cvsu.edu.ph'):
+            flash('Only CVSU email accounts (@cvsu.edu.ph) are allowed for registration.', 'error')
             return redirect(url_for('signup'))
 
         if len(username) < 4:
@@ -892,7 +982,7 @@ def admin_browse_theses():
     base_query = """
         FROM published_theses pt
         JOIN users u ON pt.published_by = u.id
-        WHERE 1=1
+        WHERE pt.is_archived = 0
     """
     params = []
 
@@ -926,7 +1016,6 @@ def admin_browse_theses():
         per_page=per_page,
         total_pages=total_pages
     )
-
 @app.route('/process-image-search', methods=['POST'])
 @login_required
 def process_image_search():
@@ -1393,18 +1482,21 @@ def admin_upload():
             text
         ))
         submission_id = cursor.lastrowid
-        published_id = cursor.lastrowid
-        # ✅ Copy categories from submission thesis_id
-        cursor.execute("""
-            SELECT category_id FROM thesis_categories WHERE thesis_id = %s
-        """, (submission_id,))
-        existing_cats = cursor.fetchall()
 
-        for cat in existing_cats:
-            cursor.execute("""
-                INSERT INTO thesis_categories (thesis_id, category_id)
-                VALUES (%s, %s)
-            """, (published_id, cat['category_id']))
+        # Add detected categories
+        detected_category_ids = []
+        for category_name in thesis_info.get('Categories', []):
+            cursor.execute("SELECT id FROM categories WHERE name = %s", (category_name,))
+            category = cursor.fetchone()
+
+            if not category:
+                cursor.execute("INSERT INTO categories (name) VALUES (%s)", (category_name,))
+                category_id = cursor.lastrowid
+            else:
+                category_id = category['id']
+
+            detected_category_ids.append(category_id)
+
         mysql.connection.commit()
 
         # Immediately redirect to review page
@@ -1494,6 +1586,112 @@ def admin_submissions():
                          stats=stats,
                          current_filter=status_filter)
 
+@app.route('/admin/archive', methods=['GET', 'POST'])
+@login_required
+def manage_archive():
+    if not current_user.is_admin():
+        abort(403)
+
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+        thesis_id = request.form.get('thesis_id')
+
+        try:
+            if action == 'restore':
+                cursor.execute("""
+                    UPDATE published_theses
+                    SET is_archived = 0, archived_at = NULL, deletion_scheduled = NULL
+                    WHERE id = %s
+                """, (thesis_id,))
+                log_admin_action(
+                    'thesis_restore',
+                    f"Restored thesis from archive: {thesis_id}",
+                    target_id=thesis_id,
+                    target_type='published_theses'
+                )
+                flash('Thesis restored successfully', 'success')
+
+            elif action == 'delete':
+                cursor.execute("""
+                    DELETE FROM published_theses
+                    WHERE id = %s AND is_archived = 1
+                """, (thesis_id,))
+                log_admin_action(
+                    'thesis_permanent_delete',
+                    f"Permanently deleted thesis: {thesis_id}",
+                    target_id=thesis_id,
+                    target_type='published_theses'
+                )
+                flash('Thesis permanently deleted', 'success')
+
+            mysql.connection.commit()
+        except Exception as e:
+            mysql.connection.rollback()
+            flash(f'Error processing request: {str(e)}', 'danger')
+
+    # Auto-delete old archived items (e.g., older than 30 days)
+    cutoff_date = datetime.now() - timedelta(days=30)
+    cursor.execute("""
+        SELECT * FROM published_theses
+        WHERE is_archived = 1
+        AND archived_at < %s
+    """, (cutoff_date,))
+    old_archived = cursor.fetchall()
+
+    if old_archived:
+        try:
+            cursor.executemany("""
+                DELETE FROM published_theses
+                WHERE id = %s
+            """, [(item['id'],) for item in old_archived])
+            mysql.connection.commit()
+        except Exception as e:
+            mysql.connection.rollback()
+            print(f"Error auto-deleting old archived items: {e}")
+
+    # Fetch all archived theses
+    cursor.execute("""
+        SELECT pt.*, u.username as admin_username
+        FROM published_theses pt
+        LEFT JOIN users u ON pt.published_by = u.id
+        WHERE pt.is_archived = 1
+        ORDER BY pt.archived_at DESC
+    """)
+    archived_items = cursor.fetchall()
+
+    return render_template('manage_archive.html', archived_items=archived_items)
+
+@app.route('/admin/archive-thesis/<int:thesis_id>', methods=['POST'])
+@login_required
+def archive_published_thesis(thesis_id):
+    if not current_user.is_admin():
+        abort(403)
+
+    cursor = mysql.connection.cursor()
+    archive_time = datetime.now()
+
+    try:
+        cursor.execute("""
+            UPDATE published_theses
+            SET is_archived = 1,
+                archived_at = %s
+            WHERE id = %s
+        """, (archive_time, thesis_id))
+
+        mysql.connection.commit()
+        log_admin_action('thesis_archive', f"Archived thesis {thesis_id}", thesis_id, 'published_thesis')
+        flash('Thesis archived successfully', 'success')
+
+    except Exception as e:
+        mysql.connection.rollback()
+        flash(f'Error archiving thesis: {str(e)}', 'danger')
+
+    finally:
+        cursor.close()
+
+    return redirect(url_for('browse_theses'))
 
 @app.route('/admin/trash', methods=['GET', 'POST'])
 @login_required
@@ -1636,6 +1834,145 @@ def manage_users():
                            page=page,
                            total_pages=total_pages)
 
+def detect_categories_from_title(title):
+    """Enhanced category detection with better matching and scoring"""
+    # Expanded category keywords with synonyms and related terms
+    category_keywords = {
+        'Mobile Development': [
+            'mobile', 'android', 'ios', 'flutter', 'react native', 'phone', 'app',
+            'smartphone', 'cross-platform', 'kotlin', 'swift'
+        ],
+        'Web Development': [
+            'web', 'website', 'html', 'css', 'javascript', 'react', 'angular', 'vue',
+            'frontend', 'backend', 'fullstack', 'node.js', 'django', 'laravel'
+        ],
+        'Game Development': [
+            'game', 'gaming', 'unity', 'unreal', '2d', '3d', 'vr game', 'game engine',
+            'game design', 'game development', 'game programming'
+        ],
+        'Medical Field' : [
+            'hospital' , 'medicine', 'doctor', 'nurse', 'clinic', 'health',
+        ],
+        'Machine Learning': [
+            'machine learning', 'ml', 'neural network', 'deep learning', 'ai model',
+            'tensorflow', 'pytorch', 'scikit-learn', 'supervised learning', 'unsupervised learning'
+        ],
+        'Artificial Intelligence': [
+            'artificial intelligence', 'ai', 'expert system', 'knowledge base',
+            'cognitive computing', 'intelligent system', 'ai application'
+        ],
+        'Data Science': [
+            'data science', 'data analysis', 'big data', 'data mining', 'data visualization',
+            'data analytics', 'data processing', 'pandas', 'numpy'
+        ],
+        'Cybersecurity': [
+            'cybersecurity', 'security', 'encryption', 'firewall', 'penetration testing',
+            'vulnerability', 'cyber attack', 'network security', 'information security'
+        ],
+        'Networking': [
+            'network', 'tcp/ip', 'lan', 'wan', 'vpn', 'routing', 'networking',
+            'computer network', 'network protocol', 'osi model'
+        ],
+        'Database': [
+            'database', 'sql', 'nosql', 'mongodb', 'mysql', 'postgresql',
+            'database management', 'rdbms', 'orm', 'query optimization'
+        ],
+        'Cloud Computing': [
+            'cloud', 'aws', 'azure', 'google cloud', 'serverless',
+            'cloud storage', 'cloud service', 'iaas', 'paas', 'saas'
+        ],
+        'Computer Vision': [
+            'computer vision', 'image processing', 'opencv', 'object detection',
+            'face recognition','facial recognition', 'image classification', 'image segmentation'
+        ],
+        'Natural Language Processing': [
+            'nlp', 'natural language', 'text processing', 'sentiment analysis',
+            'text classification', 'named entity recognition', 'language model'
+        ],
+        'IoT': [
+            'iot', 'internet of things', 'arduino', 'raspberry pi', 'sensor network',
+            'smart devices', 'embedded system', 'iot application'
+        ],
+        'Blockchain': [
+            'blockchain', 'bitcoin', 'ethereum', 'smart contract', 'cryptocurrency',
+            'distributed ledger', 'dapp', 'solidity'
+        ],
+        'Software Engineering': [
+            'software engineering', 'software development', 'agile', 'scrum',
+            'devops', 'ci/cd', 'software architecture', 'design pattern'
+        ],
+        'Human-Computer Interaction': [
+            'hci', 'human computer interaction', 'user interface', 'ux',
+            'user experience', 'usability', 'interaction design'
+        ]
+    }
+
+    # Process title with NLP
+    doc = nlp(title.lower())
+
+    # Initialize category scores
+    category_scores = {category: 0 for category in category_keywords.keys()}
+
+    # Score based on direct keyword matches
+    for category, keywords in category_keywords.items():
+        for keyword in keywords:
+            if keyword in title.lower():
+                category_scores[category] += 1
+
+    # Score based on noun phrases and entities
+    for chunk in doc.noun_chunks:
+        chunk_text = chunk.text.lower()
+        for category, keywords in category_keywords.items():
+            for keyword in keywords:
+                if keyword in chunk_text:
+                    category_scores[category] += 2  # Higher weight for noun phrases
+
+    # Score based on named entities
+    for ent in doc.ents:
+        ent_text = ent.text.lower()
+        for category, keywords in category_keywords.items():
+            for keyword in keywords:
+                if keyword in ent_text:
+                    category_scores[category] += 3  # Highest weight for named entities
+
+    # Filter categories with score > 0 and sort by score
+    detected_categories = [
+        category for category, score in sorted(
+            category_scores.items(),
+            key=lambda item: item[1],
+            reverse=True
+        ) if score > 0
+    ]
+
+    return detected_categories[:5]  # Return top 5 categories
+
+@app.route('/ajax/add-category', methods=['POST'])
+@login_required
+def ajax_add_category():
+    if not current_user.is_admin():
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 403
+
+    data = request.get_json()
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'success': False, 'message': 'Category name is required'})
+
+    cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+
+    # Check if category already exists
+    cursor.execute("SELECT id FROM categories WHERE name = %s", (name,))
+    existing = cursor.fetchone()
+
+    if existing:
+        return jsonify({'success': True, 'exists': True, 'id': existing['id'], 'name': name})
+
+    try:
+        cursor.execute("INSERT INTO categories (name) VALUES (%s)", (name,))
+        mysql.connection.commit()
+        return jsonify({'success': True, 'exists': False, 'id': cursor.lastrowid, 'name': name})
+    except Exception as e:
+        mysql.connection.rollback()
+        return jsonify({'success': False, 'message': str(e)})
 
 @app.route('/admin/submission/<int:submission_id>', methods=['GET', 'POST'])
 @login_required
@@ -1663,16 +2000,28 @@ def review_submission(submission_id):
     file_exists = submission['file_path'] and os.path.exists(submission['file_path'])
     file_missing = not file_exists and submission.get('file_persisted', False)
 
-    preview_url = None
-    if file_exists:
-        preview_url = url_for('serve_submission_file', submission_id=submission_id)
+    preview_url = url_for('serve_submission_file', submission_id=submission_id) if file_exists else None
+
+    cursor.execute("""
+        SELECT category_id FROM thesis_categories
+        WHERE thesis_id = %s
+    """, (submission['id'],))
+    selected_category_ids = [row['category_id'] for row in cursor.fetchall()]
+
+    detected_categories = []
+    if not selected_category_ids and submission.get('title'):
+        detected_categories = detect_categories_from_title(submission['title'])
+        for category_name in detected_categories:
+            cursor.execute("SELECT id FROM categories WHERE name = %s", (category_name,))
+            category = cursor.fetchone()
+            if category:
+                selected_category_ids.append(category['id'])
 
     if request.method == 'POST':
         action = request.form.get('action')
-
+        selected_categories = request.form.getlist('categories')
         revised_file = request.files.get('revised_file')
         current_file = submission['file_path']
-        selected_categories = request.form.getlist('categories')
 
         if revised_file and revised_file.filename != '':
             if allowed_file(revised_file.filename):
@@ -1689,12 +2038,10 @@ def review_submission(submission_id):
             else:
                 flash('Invalid file type - must be PDF for final submission', 'danger')
                 return redirect(url_for('review_submission', submission_id=submission_id))
-
         elif not file_exists and not submission.get('file_persisted', False):
             flash('No file uploaded yet.', 'danger')
             return redirect(url_for('review_submission', submission_id=submission_id))
 
-        # Process metadata
         edited_title = request.form.get('title')
         edited_authors = request.form.get('authors')
         edited_school = request.form.get('school')
@@ -1703,21 +2050,15 @@ def review_submission(submission_id):
         notes = request.form.get('notes')
 
         try:
-            page_texts = []
-            num_pages = 0
-            if current_file and os.path.exists(current_file) and current_file.lower().endswith('.pdf'):
-                with open(current_file, 'rb') as f:
-                    reader = PyPDF2.PdfReader(f)
-                    num_pages = len(reader.pages)
-                    for i, page in enumerate(reader.pages):
-                        text = page.extract_text()
-                        page_texts.append({'page_number': i+1, 'text': text})
+            cursor.execute("START TRANSACTION")
 
-            # Save version
+            cursor.execute("DELETE FROM thesis_categories WHERE thesis_id = %s", (submission_id,))
+
+            # Save the version changes
             cursor.execute("""
                 INSERT INTO thesis_versions
                 (thesis_id, edited_title, edited_authors, edited_school,
-                 edited_year_made, edited_keywords, notes, edited_by)
+                edited_year_made, edited_keywords, notes, edited_by)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 submission_id,
@@ -1745,7 +2086,15 @@ def review_submission(submission_id):
                 if not os.path.exists(current_file):
                     raise Exception("Revised file does not exist. Cannot publish.")
 
-                # Update thesis_submissions
+                # Count pages and extract text
+                page_texts = []
+                with open(current_file, 'rb') as f:
+                    reader = PyPDF2.PdfReader(f)
+                    num_pages = len(reader.pages)
+                    for i, page in enumerate(reader.pages):
+                        text = page.extract_text()
+                        page_texts.append({'page_number': i+1, 'text': text})
+
                 cursor.execute("""
                     UPDATE thesis_submissions
                     SET title = %s, authors = %s, school = %s, year_made = %s,
@@ -1760,7 +2109,6 @@ def review_submission(submission_id):
                     submission_id
                 ))
 
-                # Now publish
                 publish_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'published')
                 os.makedirs(publish_dir, exist_ok=True)
                 pdf_filename = f"{submission_id}_{secure_filename(edited_title)}.pdf"
@@ -1770,8 +2118,8 @@ def review_submission(submission_id):
                 cursor.execute("""
                     INSERT INTO published_theses
                     (submission_id, file_path, title, authors, school,
-                     year_made, published_by, num_pages)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    year_made, published_by, num_pages, published_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 """, (
                     submission_id,
                     publish_path,
@@ -1784,41 +2132,27 @@ def review_submission(submission_id):
                 ))
                 published_id = cursor.lastrowid
 
-                # Insert categories
-                selected_categories = request.form.getlist('categories')
                 for category_id in selected_categories:
                     cursor.execute(
                         "INSERT INTO thesis_categories (thesis_id, category_id) VALUES (%s, %s)",
                         (published_id, category_id)
                     )
 
-
-                # Insert pages
                 for page in page_texts:
                     cursor.execute("""
-                        INSERT INTO thesis_pages
-                        (thesis_id, page_number, page_text)
+                        INSERT INTO thesis_pages (thesis_id, page_number, page_text)
                         VALUES (%s, %s, %s)
                     """, (published_id, page['page_number'], page['text']))
 
                 mysql.connection.commit()
-                log_admin_action('thesis_approve', f"Approved and published thesis {submission_id} as {published_id}", published_id, 'published_thesis')
-                flash('Thesis published!', 'success')
-                return redirect(url_for('admin_submissions'))
+                log_admin_action('thesis_publish', f"Approved and published thesis submission {submission_id}", published_id, 'published_thesis')
+                flash('Thesis published successfully', 'success')
+                return redirect(url_for('admin_dashboard'))
 
         except Exception as e:
             mysql.connection.rollback()
-            flash(f'Error processing submission: {str(e)}', 'danger')
+            flash(f"Error: {str(e)}", 'danger')
             return redirect(url_for('review_submission', submission_id=submission_id))
-
-    # GET request
-    selected_category_ids = []
-    if submission and submission.get('id'):
-        cursor.execute("""
-            SELECT category_id FROM thesis_categories
-            WHERE thesis_id = %s
-        """, (submission['id'],))
-        selected_category_ids = [row['category_id'] for row in cursor.fetchall()]
 
     return render_template('review_submission.html',
                          submission=submission,
@@ -1826,7 +2160,8 @@ def review_submission(submission_id):
                          selected_category_ids=selected_category_ids,
                          preview_url=preview_url,
                          existing_file=os.path.basename(submission['file_path']) if submission['file_path'] else None,
-                         file_missing=file_missing)
+                         file_missing=file_missing,
+                         detected_categories=detected_categories)
 
 @app.route('/submission-file/<int:submission_id>')
 @login_required

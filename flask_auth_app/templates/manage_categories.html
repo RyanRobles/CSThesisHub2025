@@ -53,15 +53,18 @@
                 <!-- Categories List -->
                 <div class="col-md-8">
                     <div class="card">
-                        <div class="card-header">
+                        <div class="card-header d-flex justify-content-between align-items-center">
                             <h5 class="m-0">Existing Categories</h5>
+                            <div>
+                                <input type="text" id="categorySearch" class="form-control form-control-sm" placeholder="Search categories...">
+                            </div>
                         </div>
                         <div class="card-body">
                             {% if not categories %}
                                 <div class="alert alert-info">No categories found.</div>
                             {% else %}
                                 <div class="table-responsive">
-                                    <table class="table table-hover">
+                                    <table class="table table-hover" id="categoriesTable">
                                         <thead>
                                             <tr>
                                                 <th>Name</th>
@@ -95,4 +98,31 @@
         </main>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Category search functionality
+    const categorySearch = document.getElementById('categorySearch');
+    const categoriesTable = document.getElementById('categoriesTable');
+    
+    if (categorySearch && categoriesTable) {
+        categorySearch.addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase();
+            const rows = categoriesTable.getElementsByTagName('tr');
+            
+            for (let i = 1; i < rows.length; i++) { // Skip header row
+                const cells = rows[i].getElementsByTagName('td');
+                const name = cells[0].textContent.toLowerCase();
+                const description = cells[1].textContent.toLowerCase();
+                
+                if (name.includes(searchTerm) || description.includes(searchTerm)) {
+                    rows[i].style.display = '';
+                } else {
+                    rows[i].style.display = 'none';
+                }
+            }
+        });
+    }
+});
+</script>
 {% endblock %}
