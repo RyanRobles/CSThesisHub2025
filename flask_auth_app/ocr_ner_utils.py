@@ -268,6 +268,7 @@ def clean_ocr_text(text):
         "thc": "the",
         "Thcsis": "Thesis",
         "Systcm": "System",
+        'trnus, cavite': 'imus, cavite'
     }
 
     # Replace all manually
@@ -323,6 +324,7 @@ def extract_title(lines):
         full_title = re.sub(pattern, "", full_title, flags=re.IGNORECASE).strip(" .,;:-")
 
     return full_title
+
 def extract_info(text):
     text = clean_ocr_text(text)
     lines = [line.strip() for line in text.split("\n") if line.strip()]
@@ -341,63 +343,53 @@ def extract_info(text):
         "Year Made": "Not Found",
         "Keywords": extract_keywords_from_abstract(text)  # Use new function
     }
-
     # Extract authors and other entities
+    NON_AUTHOR_KEYWORDS = {"CAVITE", "IMUS", "CAMPUS", "UNIVERSITY", "COLLEGE", "DEPARTMENT", "PHILIPPINES"}
+
+    def is_likely_person(name):
+        return not any(word in name for word in NON_AUTHOR_KEYWORDS)
+
     authors = []
     for ent in doc.spans.get("sc", []):
         if ent.label_ == "AUTHOR":
-            # Enhanced cleaning for author names
-            cleaned_author = re.sub(r"[\"'`.,;:()\[\]{}<>]", "", ent.text).strip().upper()
-            cleaned_author = re.sub(r"\s{2,}", " ", cleaned_author)
-            if len(cleaned_author.split()) >= 2:
-                authors.append(cleaned_author)
+            # The raw text could be multiple authors separated by newlines or periods, 
+            # so split on newlines or periods first
+            raw_authors = re.split(r'[\n\.]+', ent.text)
+            for raw_author in raw_authors:
+                raw_author = raw_author.strip()
+                if not raw_author:
+                    continue
 
-    # Improved author normalization and deduplication
+                # Check if it contains comma (surname first)
+                if ',' in raw_author:
+                    # Example: "BALTAZAR, SHANNEN ROSE D"
+                    parts = raw_author.split(',', 1)
+                    surname = parts[0].strip().upper()
+                    given_names = parts[1].strip().upper()
+                    full_name = f"{surname} {given_names}"
+                else:
+                    # No comma, assume normal order
+                    full_name = raw_author.upper()
+
+                # Clean unwanted characters
+                cleaned_author = re.sub(r"[\"'`.,;:()\[\]{}<>]", "", full_name).strip()
+                cleaned_author = re.sub(r"\s{2,}", " ", cleaned_author)
+
+                # Filter out non-person names and ensure it has at least two words (surname + first name)
+                if is_likely_person(cleaned_author) and len(cleaned_author.split()) >= 2:
+                    authors.append(cleaned_author)
+
     def normalize_author_name(name):
-        # Remove all non-alphabetic characters except spaces
+        # Remove non-alpha except spaces
         name = re.sub(r"[^A-Z ]", "", name.upper().strip())
-        # Standardize name format (Lastname Firstname Middlename)
         parts = name.split()
         if len(parts) > 1:
-            # Handle cases like "ANDRES, JOHN RYAN L" -> "ANDRES JOHN RYAN L"
-            if ',' in name:
-                lastname = parts[0].replace(',', '')
-                rest = ' '.join(parts[1:])
-                name = f"{lastname} {rest}"
-            # Remove duplicate middle initials (e.g., "L L" -> "L")
+            # Already handled comma format, so just remove duplicate initials
             name = re.sub(r'(\b[A-Z]\b\s*){2,}', lambda m: m.group(1), name)
         return name
-    cs_categories = {
-        'Artificial Intelligence': ['ai', 'artificial intelligence', 'machine learning', 'deep learning', 'neural network'],
-        'Computer Vision': ['computer vision', 'image processing', 'cv'],
-        'Natural Language Processing': ['nlp', 'natural language', 'text processing'],
-        'Data Science': ['data science', 'data mining', 'big data', 'data analysis'],
-        'Cybersecurity': ['cybersecurity', 'network security', 'encryption', 'blockchain'],
-        'Software Engineering': ['software engineering', 'agile', 'devops', 'software development'],
-        'Web Development': ['web development', 'web application', 'frontend', 'backend'],
-        'Mobile Development': ['mobile development', 'android', 'ios', 'flutter'],
-        'Cloud Computing': ['cloud computing', 'aws', 'azure', 'google cloud'],
-        'Internet of Things': ['iot', 'internet of things', 'embedded systems'],
-        'Databases': ['database', 'sql', 'nosql', 'data warehouse'],
-        'Algorithms': ['algorithm', 'data structure', 'computational complexity']
-    }
-    
-    detected_categories = []
-    text_lower = text.lower()
-    
-    for category, keywords in cs_categories.items():
-        for keyword in keywords:
-            if keyword in text_lower:
-                detected_categories.append(category)
-                break  # Only need one match per category
-    
-    # Remove duplicates while preserving order
-    detected_categories = list(dict.fromkeys(detected_categories))
-    # Two-pass deduplication for better accuracy
-    unique_authors = []
-    seen_names = set()
 
-    # First pass: exact matches
+    # Deduplicate authors by normalized name
+    seen_names = set()
     temp_authors = []
     for a in authors:
         norm = normalize_author_name(a)
@@ -405,18 +397,15 @@ def extract_info(text):
             seen_names.add(norm)
             temp_authors.append(norm)
 
-    # Second pass: fuzzy matching for similar names
-    final_authors = []
+    # Second pass deduplication by last name + first initial
     seen_initials = set()
+    final_authors = []
     for author in temp_authors:
         parts = author.split()
-        # Create a signature that combines last name and first initial
         if len(parts) >= 2:
             signature = f"{parts[0]} {parts[1][0]}"
         else:
             signature = author
-
-        # Check if this is likely a duplicate
         if signature not in seen_initials:
             seen_initials.add(signature)
             final_authors.append(author)
