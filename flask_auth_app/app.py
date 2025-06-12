@@ -45,6 +45,7 @@ app.config['MYSQL_DB'] = 'flask_auth'
 app.config['GOOGLE_CLIENT_ID'] = '586814776597-d02cl4irnvjodsn52iegiqlvo7edbgdk.apps.googleusercontent.com'
 app.config['GOOGLE_CLIENT_SECRET'] = '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'
 app.config['GOOGLE_DISCOVERY_URL'] = "https://accounts.google.com/.well-known/openid-configuration"
+
 # Gmail SMTP Configuration
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
@@ -1605,19 +1606,22 @@ def manage_archive():
                     SET is_archived = 0, archived_at = NULL, deletion_scheduled = NULL
                     WHERE id = %s
                 """, (thesis_id,))
-                log_admin_action(
-                    'thesis_restore',
-                    f"Restored thesis from archive: {thesis_id}",
-                    target_id=thesis_id,
-                    target_type='published_theses'
-                )
+                log_admin_action('thesis_restore', f"Restored thesis from archive: {thesis_id}", target_id=thesis_id, target_type='published_theses')
                 flash('Thesis restored successfully', 'success')
 
             elif action == 'delete':
+                # First delete thesis pages linked to this thesis
+                cursor.execute("""
+                    DELETE FROM thesis_pages
+                    WHERE thesis_id = %s
+                """, (thesis_id,))
+
+                # Then delete the thesis record itself
                 cursor.execute("""
                     DELETE FROM published_theses
                     WHERE id = %s AND is_archived = 1
                 """, (thesis_id,))
+
                 log_admin_action(
                     'thesis_permanent_delete',
                     f"Permanently deleted thesis: {thesis_id}",
@@ -1626,42 +1630,62 @@ def manage_archive():
                 )
                 flash('Thesis permanently deleted', 'success')
 
-            mysql.connection.commit()
+                mysql.connection.commit()
         except Exception as e:
             mysql.connection.rollback()
             flash(f'Error processing request: {str(e)}', 'danger')
 
-    # Auto-delete old archived items (e.g., older than 30 days)
+    # Auto-delete old archived items (older than 30 days)
     cutoff_date = datetime.now() - timedelta(days=30)
     cursor.execute("""
-        SELECT * FROM published_theses
-        WHERE is_archived = 1
-        AND archived_at < %s
+        DELETE FROM published_theses
+        WHERE is_archived = 1 AND archived_at < %s
     """, (cutoff_date,))
-    old_archived = cursor.fetchall()
+    mysql.connection.commit()
 
-    if old_archived:
-        try:
-            cursor.executemany("""
-                DELETE FROM published_theses
-                WHERE id = %s
-            """, [(item['id'],) for item in old_archived])
-            mysql.connection.commit()
-        except Exception as e:
-            mysql.connection.rollback()
-            print(f"Error auto-deleting old archived items: {e}")
+    # Build filters from GET parameters
+    search = request.args.get('search', '').strip()
+    year_made = request.args.get('year_made', '').strip()
+    archived_year = request.args.get('archived_year', '').strip()
 
-    # Fetch all archived theses
-    cursor.execute("""
+    query = """
         SELECT pt.*, u.username as admin_username
         FROM published_theses pt
         LEFT JOIN users u ON pt.published_by = u.id
         WHERE pt.is_archived = 1
-        ORDER BY pt.archived_at DESC
-    """)
+    """
+    params = []
+
+    if search:
+        query += " AND (pt.title LIKE %s OR pt.authors LIKE %s)"
+        search_term = f"%{search}%"
+        params.extend([search_term, search_term])
+
+    if year_made:
+        query += " AND pt.year_made = %s"
+        params.append(year_made)
+
+    if archived_year:
+        query += " AND YEAR(pt.archived_at) = %s"
+        params.append(archived_year)
+
+    query += " ORDER BY pt.archived_at DESC"
+    cursor.execute(query, params)
     archived_items = cursor.fetchall()
 
-    return render_template('manage_archive.html', archived_items=archived_items)
+    # Generate year filters for dropdowns
+    cursor.execute("SELECT DISTINCT year_made FROM published_theses WHERE is_archived = 1 ORDER BY year_made DESC")
+    available_years = [row['year_made'] for row in cursor.fetchall()]
+
+    cursor.execute("SELECT DISTINCT YEAR(archived_at) as year FROM published_theses WHERE is_archived = 1 ORDER BY year DESC")
+    archived_years = [row['year'] for row in cursor.fetchall()]
+
+    return render_template(
+        'manage_archive.html',
+        archived_items=archived_items,
+        available_years=available_years,
+        archived_years=archived_years
+    )
 
 @app.route('/admin/archive-thesis/<int:thesis_id>', methods=['POST'])
 @login_required
@@ -1691,7 +1715,8 @@ def archive_published_thesis(thesis_id):
     finally:
         cursor.close()
 
-    return redirect(url_for('browse_theses'))
+    # Redirect to manage_archive where flash messages are properly displayed
+    return redirect(url_for('manage_archive'))
 
 @app.route('/admin/trash', methods=['GET', 'POST'])
 @login_required
@@ -1883,7 +1908,7 @@ def detect_categories_from_title(title):
         ],
         'Computer Vision': [
             'computer vision', 'image processing', 'opencv', 'object detection',
-            'face recognition','facial recognition', 'image classification', 'image segmentation'
+            'face recognition','facial recognition', 'image classification', 'image segmentation', 'qr'
         ],
         'Natural Language Processing': [
             'nlp', 'natural language', 'text processing', 'sentiment analysis',
