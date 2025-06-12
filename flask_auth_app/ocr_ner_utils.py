@@ -315,10 +315,13 @@ def extract_title(lines):
 
     # Remove common non-title suffixes
     generic_suffixes = [
-        r"\b(an?\s+)?undergraduate thesis\b",
-        r"\ba thesis (submitted|presented)[^,.;:]*",
+        r"\b(?:an?\s+)?undergraduate thesis\b",
+        r"\ba thesis (?:submitted|presented)[^,.;:]*",
         r"\ba research paper[^,.;:]*",
-        r"\ba capstone project\b"
+        r"capstone project",
+        r"\ba capstone project\b",
+        r"\bin partial\b",
+        r"\bfutflment\b"
     ]
     for pattern in generic_suffixes:
         full_title = re.sub(pattern, "", full_title, flags=re.IGNORECASE).strip(" .,;:-")
