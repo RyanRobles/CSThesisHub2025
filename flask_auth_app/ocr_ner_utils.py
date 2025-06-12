@@ -279,7 +279,6 @@ def clean_ocr_text(text):
     text = re.sub(r'\s{2,}', ' ', text)
 
     return text
-
 def extract_title(lines):
     """Extracts thesis title across multiple lines and removes generic trailing phrases."""
     title_lines = []
