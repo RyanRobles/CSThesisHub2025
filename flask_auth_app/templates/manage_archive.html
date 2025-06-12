@@ -38,11 +38,11 @@
                 </div>
 
                 <div class="col-md-3">
-                    <label for="published_year" class="form-label">Year Published</label>
-                    <select name="published_year" id="published_year" class="form-select">
+                    <label for="year_made" class="form-label">Year Published</label>
+                    <select name="year_made" id="year_made" class="form-select">
                         <option value="">All Years</option>
-                        {% for year in published_years %}
-                            <option value="{{ year }}" {% if request.args.get('published_year') == year|string %}selected{% endif %}>{{ year }}</option>
+                        {% for year in available_years %}
+                            <option value="{{ year }}" {% if request.args.get('year_made') == year|string %}selected{% endif %}>{{ year }}</option>
                         {% endfor %}
                     </select>
                 </div>
