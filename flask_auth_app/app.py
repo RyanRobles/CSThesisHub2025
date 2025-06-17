@@ -155,15 +155,16 @@ def search():
 
     cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    # Get all unique words from titles, authors, and category names
+    # Get all unique words from titles, authors, and category names (only non-archived theses)
     cursor.execute("""
         SELECT
-            GROUP_CONCAT(DISTINCT LOWER(title) SEPARATOR ' ') as titles,
-            GROUP_CONCAT(DISTINCT LOWER(authors) SEPARATOR ' ') as authors,
+            GROUP_CONCAT(DISTINCT LOWER(pt.title) SEPARATOR ' ') as titles,
+            GROUP_CONCAT(DISTINCT LOWER(pt.authors) SEPARATOR ' ') as authors,
             GROUP_CONCAT(DISTINCT LOWER(c.name) SEPARATOR ' ') as categories
         FROM published_theses pt
         LEFT JOIN thesis_categories tc ON pt.id = tc.thesis_id
         LEFT JOIN categories c ON tc.category_id = c.id
+        WHERE pt.is_archived = 0
     """)
     text_data = cursor.fetchone()
 
@@ -207,14 +208,17 @@ def search():
                    ELSE 0
                END as relevance_boost
         FROM published_theses pt
-        WHERE MATCH(pt.title, pt.authors) AGAINST(%s IN BOOLEAN MODE)
-           OR EXISTS (
-               SELECT 1 FROM thesis_categories tc
-               JOIN categories c ON tc.category_id = c.id
-               WHERE tc.thesis_id = pt.id
-               AND MATCH(c.name) AGAINST(%s IN BOOLEAN MODE)
-           )
-           OR pt.year_made = %s
+        WHERE pt.is_archived = 0
+        AND (
+            MATCH(pt.title, pt.authors) AGAINST(%s IN BOOLEAN MODE)
+            OR EXISTS (
+                SELECT 1 FROM thesis_categories tc
+                JOIN categories c ON tc.category_id = c.id
+                WHERE tc.thesis_id = pt.id
+                AND MATCH(c.name) AGAINST(%s IN BOOLEAN MODE)
+            )
+            OR pt.year_made = %s
+        )
         ORDER BY relevance_boost DESC, pt.published_at DESC
     """, (
         clean_query_formatted,
@@ -248,7 +252,8 @@ def search():
             MATCH(tp.page_text) AGAINST(%s IN BOOLEAN MODE) as relevance_score
         FROM thesis_pages tp
         JOIN published_theses pt ON tp.thesis_id = pt.id
-        WHERE tp.page_number BETWEEN 1 AND 5
+        WHERE pt.is_archived = 0
+        AND tp.page_number BETWEEN 1 AND 5
         AND MATCH(tp.page_text) AGAINST(%s IN BOOLEAN MODE)
         ORDER BY (relevance_score * term_frequency * 1.5) DESC
         LIMIT 50
@@ -685,16 +690,16 @@ def admin_dashboard():
 
     # Corrected stats calculation
     cursor.execute("""
-        SELECT
-            (
-                (SELECT COUNT(*) FROM thesis_submissions WHERE status IN ('pending', 'rejected'))
-                +
-                (SELECT COUNT(*) FROM published_theses)
-            ) AS total_submissions,
-            (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'pending') AS pending,
-            (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'rejected') AS rejected,
-            (SELECT COUNT(*) FROM published_theses) AS total_published
-    """)
+    SELECT
+        (
+            (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'pending')
+            +
+            (SELECT COUNT(*) FROM published_theses WHERE is_archived = 0)
+        ) AS total_submissions,
+        (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'pending') AS pending,
+        (SELECT COUNT(*) FROM published_theses WHERE is_archived = 0) AS total_published,
+        (SELECT COUNT(*) FROM published_theses WHERE is_archived = 1) AS archived
+        """)
     stats = cursor.fetchone()
 
     # Recent submissions (no change)
@@ -720,8 +725,8 @@ def admin_dashboard():
 def user_dashboard():
     cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
-    # Get total published theses
-    cursor.execute("SELECT COUNT(*) as total_published FROM published_theses")
+    # Get total published theses (only non-archived)
+    cursor.execute("SELECT COUNT(*) as total_published FROM published_theses WHERE is_archived = 0")
     stats = cursor.fetchone()
 
     # Get user's recent views count
@@ -850,7 +855,7 @@ def browse_theses():
         FROM published_theses pt
         LEFT JOIN thesis_categories tc ON pt.id = tc.thesis_id
         LEFT JOIN categories c ON tc.category_id = c.id
-        WHERE 1=1
+        WHERE pt.is_archived = 0
     """
     params = []
 
@@ -1248,6 +1253,12 @@ def generate_apa_citation(thesis):
 def view_thesis(thesis_id):
     cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
 
+    # Check if thesis exists and is not archived (for regular users)
+    if not current_user.is_admin():
+        cursor.execute("SELECT id FROM published_theses WHERE id = %s AND is_archived = 0", (thesis_id,))
+        if not cursor.fetchone():
+            abort(404)
+
     # Record view history (existing code remains the same)
     today = datetime.now().date()
     cursor.execute("""
@@ -1408,9 +1419,14 @@ def manage_categories():
 @app.route('/thesis-file/<int:thesis_id>')
 @login_required
 def serve_thesis_file(thesis_id):
-    # Get the file path from the database based on thesis_id
     cursor = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
-    cursor.execute("SELECT file_path FROM published_theses WHERE id = %s", (thesis_id,))
+    
+    # For regular users, check if thesis is not archived
+    if not current_user.is_admin():
+        cursor.execute("SELECT file_path FROM published_theses WHERE id = %s AND is_archived = 0", (thesis_id,))
+    else:
+        cursor.execute("SELECT file_path FROM published_theses WHERE id = %s", (thesis_id,))
+        
     result = cursor.fetchone()
     cursor.close()
 
@@ -1568,7 +1584,7 @@ def admin_submissions():
         else:
             sub['preview_image_url'] = None
 
-    # Get stats
+    # Get stats - updated to include archived count
     cursor.execute("""
         SELECT
             (
@@ -1578,7 +1594,8 @@ def admin_submissions():
             ) AS total_submissions,
             (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'pending') AS pending,
             (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'rejected') AS rejected,
-            (SELECT COUNT(*) FROM published_theses) AS total_published
+            (SELECT COUNT(*) FROM published_theses WHERE is_archived = 0) AS total_published,
+            (SELECT COUNT(*) FROM published_theses WHERE is_archived = 1) AS total_archived
     """)
     stats = cursor.fetchone()
 
@@ -1586,7 +1603,6 @@ def admin_submissions():
                          submissions=submissions,
                          stats=stats,
                          current_filter=status_filter)
-
 @app.route('/admin/archive', methods=['GET', 'POST'])
 @login_required
 def manage_archive():
@@ -1630,7 +1646,7 @@ def manage_archive():
                 )
                 flash('Thesis permanently deleted', 'success')
 
-                mysql.connection.commit()
+            mysql.connection.commit()
         except Exception as e:
             mysql.connection.rollback()
             flash(f'Error processing request: {str(e)}', 'danger')
@@ -1908,7 +1924,7 @@ def detect_categories_from_title(title):
         ],
         'Computer Vision': [
             'computer vision', 'image processing', 'opencv', 'object detection',
-            'face recognition','facial recognition', 'image classification', 'image segmentation', 'qr'
+            'face recognition','facial recognition', 'image classification', 'image segmentation'
         ],
         'Natural Language Processing': [
             'nlp', 'natural language', 'text processing', 'sentiment analysis',
@@ -2010,6 +2026,16 @@ def review_submission(submission_id):
     # Get all categories
     cursor.execute("SELECT * FROM categories ORDER BY name")
     all_categories = cursor.fetchall()
+
+    # Get stats including archived count (same as admin_dashboard)
+    cursor.execute("""
+        SELECT
+            (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'pending') AS pending,
+            (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'rejected') AS rejected,
+            (SELECT COUNT(*) FROM published_theses WHERE is_archived = 0) AS total_published,
+            (SELECT COUNT(*) FROM published_theses WHERE is_archived = 1) AS archived
+    """)
+    stats = cursor.fetchone()
 
     cursor.execute("""
         SELECT ts.*, u.username as admin_username
@@ -2186,8 +2212,8 @@ def review_submission(submission_id):
                          preview_url=preview_url,
                          existing_file=os.path.basename(submission['file_path']) if submission['file_path'] else None,
                          file_missing=file_missing,
-                         detected_categories=detected_categories)
-
+                         detected_categories=detected_categories,
+                         stats=stats)  # Add stats to template context
 @app.route('/submission-file/<int:submission_id>')
 @login_required
 def serve_submission_file(submission_id):
