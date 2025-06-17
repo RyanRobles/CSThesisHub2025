@@ -32,11 +32,11 @@ Unzip the CSThesisHub2025 project folder to your desired location.
    ```bash
     source CSThesisHub2025.sql
   ```
- - or use your MySQL client's import function
+   - or use your MySQL client's import function
 
 4.   Run the Application
-- Start the flask development server:
+    Start the flask development server:
     ``` bash
     python app.py
     ```
-    - The system will be accessible at: http://127.0.0.1:5000/
+      - The system will be accessible at: http://127.0.0.1:5000/
