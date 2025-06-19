@@ -1586,17 +1586,16 @@ def admin_submissions():
 
     # Get stats - updated to include archived count
     cursor.execute("""
-        SELECT
-            (
-                (SELECT COUNT(*) FROM thesis_submissions WHERE status IN ('pending', 'rejected'))
-                +
-                (SELECT COUNT(*) FROM published_theses)
-            ) AS total_submissions,
-            (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'pending') AS pending,
-            (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'rejected') AS rejected,
-            (SELECT COUNT(*) FROM published_theses WHERE is_archived = 0) AS total_published,
-            (SELECT COUNT(*) FROM published_theses WHERE is_archived = 1) AS total_archived
-    """)
+    SELECT
+        (
+            (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'pending')
+            +
+            (SELECT COUNT(*) FROM published_theses WHERE is_archived = 0)
+        ) AS total_submissions,
+        (SELECT COUNT(*) FROM thesis_submissions WHERE status = 'pending') AS pending,
+        (SELECT COUNT(*) FROM published_theses WHERE is_archived = 0) AS total_published,
+        (SELECT COUNT(*) FROM published_theses WHERE is_archived = 1) AS archived
+        """)
     stats = cursor.fetchone()
 
     return render_template('admin_submissions.html',
